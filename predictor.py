@@ -61,40 +61,37 @@ def normalize_data(df):
     df[feature_columns] = scaler.fit_transform(df[feature_columns])
     return df, scaler
 
-def plot_candlestick(df, predicted_dates, predicted_values, ticker, display_plot=False, plot_tech_indicators=False):
+def plot_candlestick(df, predicted_dates, predicted_values, ticker, display_plot=False, plot_tech_indicators=False, previous_data_length=360):
     df = df.copy()
     df['Date'] = df.index.map(mdates.date2num)
     
+    # Filter data to include only the required amount of previous data
+    df = df.iloc[-previous_data_length:]
+    
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 16), sharex=True, gridspec_kw={'height_ratios': [3, 1, 1]})
     
-    # Plot candlestick data
     for idx, row in df.iterrows():
         color = 'green' if row['Close'] > row['Open'] else 'red'
         ax1.plot([row['Date'], row['Date']], [row['Low'], row['High']], color=color)
         ax1.plot([row['Date'], row['Date']], [row['Open'], row['Close']], color=color, linewidth=2)
     
     if plot_tech_indicators:
-        # Plot SMA and Bollinger Bands on the main plot
         ax1.plot(df['Date'], df['SMA'], label='SMA', color='blue')
         ax1.fill_between(df['Date'], df['BollingerUpper'], df['BollingerLower'], color='gray', alpha=0.2, label='Bollinger Bands')
-        
-        # Plot RSI on the second subplot
         ax2.plot(df['Date'], df['RSI'], label='RSI', color='purple', linestyle='--')
         ax2.axhline(70, color='red', linestyle='--')
         ax2.axhline(30, color='green', linestyle='--')
         ax2.set_ylim([0, 100])
         ax2.set_ylabel('RSI')
         ax2.legend(loc='upper left')
-        
-        # Plot MACD and Signal Line on the third subplot
         ax3.plot(df['Date'], df['MACD'], label='MACD', color='orange')
         ax3.plot(df['Date'], df['SignalLine'], label='Signal Line', color='blue', linestyle='--')
         ax3.set_ylabel('MACD')
         ax3.legend(loc='upper left')
     
-    # Plot predicted data as markers on the main plot
+    # Convert predicted dates to the correct format
+    predicted_dates = [mdates.date2num(pd.to_datetime(date)) for date in predicted_dates]
     ax1.plot(predicted_dates, predicted_values, 'bo--', label='Predicted', markersize=3)
-    
     ax1.xaxis_date()
     ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
     fig.autofmt_xdate()
@@ -218,7 +215,7 @@ def load_model(model, path):
     model.load_state_dict(torch.load(path))
     return model
 
-def predict_and_plot(model, data, ticker, scaler, sequence_length=30, interval='1d', display_plot=False, plot_tech_indicators=False):
+def predict_and_plot(model, data, ticker, scaler, sequence_length=30, interval='1d', display_plot=False, plot_tech_indicators=False, previous_data_length=360):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     model.eval()
@@ -238,7 +235,6 @@ def predict_and_plot(model, data, ticker, scaler, sequence_length=30, interval='
             final_output = model(x_input)
             predicted = final_output.squeeze().item()
         
-        # Update the input sequence with the new prediction
         predicted_value_scaled = np.array([0, 0, 0, predicted, 0, 0, 0, 0, 0, 0])
         predicted_value = scaler.inverse_transform([predicted_value_scaled])[0][3]
         predictions.append(predicted_value)
@@ -248,18 +244,20 @@ def predict_and_plot(model, data, ticker, scaler, sequence_length=30, interval='
     
     print(f'Predicted values for next {sequence_length} intervals for {ticker}: {predictions}')
     
-    last_data = data.iloc[-sequence_length:]
+    last_data = data.iloc[-previous_data_length:]
     last_date = last_data.index[-1]
     if interval in ['15m', '1h', '4h']:
-        future_dates = pd.date_range(start=last_date, periods=sequence_length+1, freq=interval).map(mdates.date2num)
+        future_dates = pd.date_range(start=last_date, periods=sequence_length+1, freq=interval)
     elif interval == '1d':
-        future_dates = pd.date_range(start=last_date, periods=sequence_length+1, freq='D').map(mdates.date2num)
+        future_dates = pd.date_range(start=last_date, periods=sequence_length+1, freq='D')
     elif interval == '1wk':
-        future_dates = pd.date_range(start=last_date, periods=sequence_length+1, freq='W').map(mdates.date2num)
+        future_dates = pd.date_range(start=last_date, periods=sequence_length+1, freq='W')
     
-    plot_candlestick(last_data, future_dates[1:], predictions, ticker, display_plot, plot_tech_indicators)
+    future_dates = future_dates[1:]  # Skip the first date since it's the same as the last_date
 
-    actual_values = last_data['Close'].values
+    plot_candlestick(last_data, future_dates, predictions, ticker, display_plot, plot_tech_indicators, previous_data_length)
+
+    actual_values = last_data['Close'].values[-sequence_length:]  # Slice to match the length of predictions
     error = np.mean((np.array(predictions) - actual_values)**2)
     print(f'Mean Squared Error for the future horizon: {error:.4f}')
 
