@@ -20,13 +20,13 @@ def get_yahoo_finance_data(tickers, interval='1d', start='2023-04-01', end='2024
         data = yf.download(ticker, start=start, end=end, interval=interval)
         data['Ticker'] = ticker
         all_data = pd.concat([all_data, data])
+    all_data.index = pd.to_datetime(all_data.index)  # Ensure index is a DatetimeIndex
     return all_data
 
 def add_technical_indicators(df):
     df['SMA'] = df['Close'].rolling(window=20).mean()
-    df['EMA'] = df['Close'].ewm(span=20, adjust=False).mean()
     df['RSI'] = compute_rsi(df['Close'])
-    df['MACD'] = compute_macd(df['Close'])
+    df['MACD'], df['SignalLine'] = compute_macd(df['Close'])
     df['BollingerUpper'], df['BollingerLower'] = compute_bollinger_bands(df['Close'])
     df.dropna(inplace=True)
     return df
@@ -46,7 +46,7 @@ def compute_macd(series, fast=12, slow=26, signal=9):
     slow_ema = series.ewm(span=slow, adjust=False).mean()
     macd = fast_ema - slow_ema
     signal_line = macd.ewm(span=signal, adjust=False).mean()
-    return macd - signal_line
+    return macd, signal_line
 
 def compute_bollinger_bands(series, window=20, num_std_dev=2):
     rolling_mean = series.rolling(window=window).mean()
@@ -57,44 +57,50 @@ def compute_bollinger_bands(series, window=20, num_std_dev=2):
 
 def normalize_data(df):
     scaler = MinMaxScaler()
-    feature_columns = ['Open', 'High', 'Low', 'Close', 'SMA', 'EMA', 'RSI', 'MACD', 'BollingerUpper', 'BollingerLower']
+    feature_columns = ['Open', 'High', 'Low', 'Close', 'SMA', 'RSI', 'MACD', 'SignalLine', 'BollingerUpper', 'BollingerLower']
     df[feature_columns] = scaler.fit_transform(df[feature_columns])
     return df, scaler
 
 def plot_candlestick(df, predicted_dates, predicted_values, ticker, display_plot=False, plot_tech_indicators=False):
     df = df.copy()
-    print(df.head())
     df['Date'] = df.index.map(mdates.date2num)
     
-    fig, ax = plt.subplots(figsize=(14, 8))
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 16), sharex=True, gridspec_kw={'height_ratios': [3, 1, 1]})
     
+    # Plot candlestick data
     for idx, row in df.iterrows():
         color = 'green' if row['Close'] > row['Open'] else 'red'
-        ax.plot([row['Date'], row['Date']], [row['Low'], row['High']], color=color)
-        ax.plot([row['Date'], row['Date']], [row['Open'], row['Close']], color=color, linewidth=2)
+        ax1.plot([row['Date'], row['Date']], [row['Low'], row['High']], color=color)
+        ax1.plot([row['Date'], row['Date']], [row['Open'], row['Close']], color=color, linewidth=2)
     
     if plot_tech_indicators:
-        ax.plot(df['Date'], df['SMA'], label='SMA', color='blue')
-        ax.plot(df['Date'], df['EMA'], label='EMA', color='orange')
-        ax.fill_between(df['Date'], df['BollingerUpper'], df['BollingerLower'], color='gray', alpha=0.2, label='Bollinger Bands')
+        # Plot SMA and Bollinger Bands on the main plot
+        ax1.plot(df['Date'], df['SMA'], label='SMA', color='blue')
+        ax1.fill_between(df['Date'], df['BollingerUpper'], df['BollingerLower'], color='gray', alpha=0.2, label='Bollinger Bands')
         
-        ax2 = ax.twinx()
+        # Plot RSI on the second subplot
         ax2.plot(df['Date'], df['RSI'], label='RSI', color='purple', linestyle='--')
         ax2.axhline(70, color='red', linestyle='--')
         ax2.axhline(30, color='green', linestyle='--')
         ax2.set_ylim([0, 100])
         ax2.set_ylabel('RSI')
+        ax2.legend(loc='upper left')
+        
+        # Plot MACD and Signal Line on the third subplot
+        ax3.plot(df['Date'], df['MACD'], label='MACD', color='orange')
+        ax3.plot(df['Date'], df['SignalLine'], label='Signal Line', color='blue', linestyle='--')
+        ax3.set_ylabel('MACD')
+        ax3.legend(loc='upper left')
     
-    ax.plot(predicted_dates, predicted_values, 'bo--', label='Predicted', markersize=3)
+    # Plot predicted data as markers on the main plot
+    ax1.plot(predicted_dates, predicted_values, 'bo--', label='Predicted', markersize=3)
     
-    ax.xaxis_date()
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+    ax1.xaxis_date()
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
     fig.autofmt_xdate()
-    ax.set_xlabel('Date')
-    ax.set_ylabel('Price')
-    ax.set_title(f'Candlestick Chart with Technical Indicators and Prediction for {ticker}')
-    ax.legend()
-    fig.legend(loc='upper left', bbox_to_anchor=(0.1, 0.9))
+    ax1.set_ylabel('Price')
+    ax1.set_title(f'Candlestick Chart with Technical Indicators and Prediction for {ticker}')
+    ax1.legend(loc='upper left')
     
     plt.savefig(f'candlestick_prediction_{ticker}.png')
     if display_plot:
@@ -219,7 +225,7 @@ def predict_and_plot(model, data, ticker, scaler, sequence_length=30, interval='
     
     data = data[data['Ticker'] == ticker]
     
-    feature_columns = ['Open', 'High', 'Low', 'Close', 'SMA', 'EMA', 'RSI', 'MACD', 'BollingerUpper', 'BollingerLower']
+    feature_columns = ['Open', 'High', 'Low', 'Close', 'SMA', 'RSI', 'MACD', 'SignalLine', 'BollingerUpper', 'BollingerLower']
     data_scaled = scaler.transform(data[feature_columns])
     
     x_data = torch.tensor(data_scaled[-sequence_length:], dtype=torch.float32).unsqueeze(0).permute(0, 2, 1).to(device)
@@ -232,11 +238,13 @@ def predict_and_plot(model, data, ticker, scaler, sequence_length=30, interval='
             final_output = model(x_input)
             predicted = final_output.squeeze().item()
         
-        predicted_value = scaler.inverse_transform([[0, 0, 0, predicted, 0, 0, 0, 0, 0, 0]])[0][3]
+        # Update the input sequence with the new prediction
+        predicted_value_scaled = np.array([0, 0, 0, predicted, 0, 0, 0, 0, 0, 0])
+        predicted_value = scaler.inverse_transform([predicted_value_scaled])[0][3]
         predictions.append(predicted_value)
         
-        new_input = torch.tensor([[[0, 0, 0, predicted, 0, 0, 0, 0, 0, 0]]], dtype=torch.float32).to(device)
-        x_input = torch.cat((x_input[:, :, 1:], new_input.permute(0, 2, 1)), dim=2)
+        new_input = torch.tensor([[0, 0, 0, predicted, 0, 0, 0, 0, 0, 0]], dtype=torch.float32).to(device)
+        x_input = torch.cat((x_input[:, :, 1:], new_input.unsqueeze(2)), dim=2)
     
     print(f'Predicted values for next {sequence_length} intervals for {ticker}: {predictions}')
     
@@ -265,11 +273,11 @@ if __name__ == "__main__":
     
     sequence_length = 120
     batch_size = 32
-    epochs = 100
+    epochs = 300
     interval = '1d'
     log_dir = 'runs'
     model_path = 'model.pth'
-    plot_tech_indicators = False
+    plot_tech_indicators = True
     
     if mode == 'train':
         all_data = get_yahoo_finance_data(tickers, interval=interval)
@@ -291,7 +299,7 @@ if __name__ == "__main__":
                 ticker_data = all_data[all_data['Ticker'] == ticker]
                 ticker_data, scaler = normalize_data(ticker_data)
                 print(f"Training the model with {ticker} data...")
-                model = train_model(model, ticker_data[['Open', 'High', 'Low', 'Close', 'SMA', 'EMA', 'RSI', 'MACD', 'BollingerUpper', 'BollingerLower']].values, batch_size=batch_size, epochs=epochs, sequence_length=sequence_length, log_dir=log_dir, ticker=ticker)
+                model = train_model(model, ticker_data[['Open', 'High', 'Low', 'Close', 'SMA', 'RSI', 'MACD', 'SignalLine', 'BollingerUpper', 'BollingerLower']].values, batch_size=batch_size, epochs=epochs, sequence_length=sequence_length, log_dir=log_dir, ticker=ticker)
             
             save_model(model, model_path)
             
