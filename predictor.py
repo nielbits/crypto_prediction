@@ -12,7 +12,6 @@ import yfinance as yf
 from sklearn.model_selection import TimeSeriesSplit
 import os
 
-# Use a non-interactive backend for Matplotlib
 plt.switch_backend('agg')
 
 def get_yahoo_finance_data(tickers, interval='1d', start='2023-04-01', end='2024-05-01'):
@@ -56,41 +55,36 @@ def compute_bollinger_bands(series, window=20, num_std_dev=2):
     lower_band = rolling_mean - (rolling_std * num_std_dev)
     return upper_band, lower_band
 
-def normalize_data(all_data):
+def normalize_data(df):
     scaler = MinMaxScaler()
     feature_columns = ['Open', 'High', 'Low', 'Close', 'SMA', 'EMA', 'RSI', 'MACD', 'BollingerUpper', 'BollingerLower']
-    all_data[feature_columns] = scaler.fit_transform(all_data[feature_columns])
-    return all_data, scaler
+    df[feature_columns] = scaler.fit_transform(df[feature_columns])
+    return df, scaler
 
 def plot_candlestick(df, predicted_dates, predicted_values, ticker, display_plot=False, plot_tech_indicators=False):
-    df = df.copy()  # Work on a copy of the DataFrame to avoid SettingWithCopyWarning
-    df.loc[:, 'Date'] = df.index  # Use .loc to assign values to the 'Date' column
-    print(df['Date'] )
-    df['Date'] = df['Date'].map(mdates.date2num)
-
+    df = df.copy()
+    print(df.head())
+    df['Date'] = df.index.map(mdates.date2num)
     
     fig, ax = plt.subplots(figsize=(14, 8))
     
-    # Plot candlestick data
     for idx, row in df.iterrows():
         color = 'green' if row['Close'] > row['Open'] else 'red'
         ax.plot([row['Date'], row['Date']], [row['Low'], row['High']], color=color)
         ax.plot([row['Date'], row['Date']], [row['Open'], row['Close']], color=color, linewidth=2)
     
     if plot_tech_indicators:
-        # Plot technical indicators
-        ax.plot(df.index, df['SMA'], label='SMA', color='blue')
-        ax.plot(df.index, df['EMA'], label='EMA', color='orange')
-        ax.fill_between(df.index, df['BollingerUpper'], df['BollingerLower'], color='gray', alpha=0.2, label='Bollinger Bands')
+        ax.plot(df['Date'], df['SMA'], label='SMA', color='blue')
+        ax.plot(df['Date'], df['EMA'], label='EMA', color='orange')
+        ax.fill_between(df['Date'], df['BollingerUpper'], df['BollingerLower'], color='gray', alpha=0.2, label='Bollinger Bands')
         
         ax2 = ax.twinx()
-        ax2.plot(df.index, df['RSI'], label='RSI', color='purple', linestyle='--')
+        ax2.plot(df['Date'], df['RSI'], label='RSI', color='purple', linestyle='--')
         ax2.axhline(70, color='red', linestyle='--')
         ax2.axhline(30, color='green', linestyle='--')
         ax2.set_ylim([0, 100])
         ax2.set_ylabel('RSI')
     
-    # Plot predicted data as markers
     ax.plot(predicted_dates, predicted_values, 'bo--', label='Predicted', markersize=3)
     
     ax.xaxis_date()
@@ -218,7 +212,7 @@ def load_model(model, path):
     model.load_state_dict(torch.load(path))
     return model
 
-def predict_and_plot(model, data, ticker, scaler, batch_size, sequence_length=30, interval='1d', display_plot=False, plot_tech_indicators=False):
+def predict_and_plot(model, data, ticker, scaler, sequence_length=30, interval='1d', display_plot=False, plot_tech_indicators=False):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     model.eval()
@@ -228,11 +222,10 @@ def predict_and_plot(model, data, ticker, scaler, batch_size, sequence_length=30
     feature_columns = ['Open', 'High', 'Low', 'Close', 'SMA', 'EMA', 'RSI', 'MACD', 'BollingerUpper', 'BollingerLower']
     data_scaled = scaler.transform(data[feature_columns])
     
-    # Use sequence_length instead of batch_size for generating initial x_data
-    x_data = torch.tensor(data_scaled[-(sequence_length):], dtype=torch.float32).unsqueeze(0).permute(0, 2, 1).to(device)
+    x_data = torch.tensor(data_scaled[-sequence_length:], dtype=torch.float32).unsqueeze(0).permute(0, 2, 1).to(device)
     
     predictions = []
-    x_input = x_data  # Initial input is the last sequence_length data points
+    x_input = x_data
     
     for _ in range(sequence_length):
         with torch.no_grad():
@@ -258,8 +251,7 @@ def predict_and_plot(model, data, ticker, scaler, batch_size, sequence_length=30
     
     plot_candlestick(last_data, future_dates[1:], predictions, ticker, display_plot, plot_tech_indicators)
 
-    # Calculate error for the future horizon
-    actual_values = last_data['Close'].values[-sequence_length:]
+    actual_values = last_data['Close'].values
     error = np.mean((np.array(predictions) - actual_values)**2)
     print(f'Mean Squared Error for the future horizon: {error:.4f}')
 
@@ -267,24 +259,33 @@ if __name__ == "__main__":
     tickers = ['BTC-USD', 'ETH-USD', 'BNB-USD', 'ADA-USD', 'XRP-USD', 'SOL-USD', 'DOT-USD', 'DOGE-USD', 'UNI-USD', 'LTC-USD', 
                'LINK-USD', 'BCH-USD', 'XLM-USD', 'FIL-USD', 'TRX-USD', 'EOS-USD', 'ATOM-USD', 'ETC-USD', 'XTZ-USD', 'MKR-USD']
     
-    chosen_ticker = 'ETH-USD'  # Specify the ticker for which you want to display the plot
-    mode = 'predict'  # Set to 'train' to train the model or 'predict' to load and predict
+    chosen_ticker = 'ETH-USD'
+    mode = 'predict'
+    continue_training = True  # Set this to False to train from scratch
     
-    sequence_length = 30  # Define sequence length as a hyperparameter
-    batch_size = 64  # Define batch size as a hyperparameter
-    epochs = 50
+    sequence_length = 120
+    batch_size = 32
+    epochs = 100
     interval = '1d'
     log_dir = 'runs'
     model_path = 'model.pth'
-    plot_tech_indicators = False  # Set to False to disable plotting technical indicators
+    plot_tech_indicators = False
     
-    if mode == 'predict':
+    if mode == 'train':
         all_data = get_yahoo_finance_data(tickers, interval=interval)
+        
         all_data = all_data.groupby('Ticker').apply(add_technical_indicators).reset_index(drop=True)
         
         if not all_data.empty:
+            scaler = MinMaxScaler()
             model = CNNRNNModel(input_channels=10, rnn_hidden_size=batch_size, sequence_length=sequence_length)
-            scaler = None
+            
+            if continue_training and os.path.exists(model_path):
+                model = load_model(model, model_path)
+                print("Loaded existing model for further training.")
+            else:
+                print("Training a new model from scratch.")
+            
             for ticker in tickers:
                 print(f"Processing data for {ticker}...")
                 ticker_data = all_data[all_data['Ticker'] == ticker]
@@ -292,23 +293,19 @@ if __name__ == "__main__":
                 print(f"Training the model with {ticker} data...")
                 model = train_model(model, ticker_data[['Open', 'High', 'Low', 'Close', 'SMA', 'EMA', 'RSI', 'MACD', 'BollingerUpper', 'BollingerLower']].values, batch_size=batch_size, epochs=epochs, sequence_length=sequence_length, log_dir=log_dir, ticker=ticker)
             
-            # Save the trained model
             save_model(model, model_path)
             
             print(f"Predicting and plotting for {chosen_ticker}...")
-            predict_and_plot(model, all_data, chosen_ticker, scaler, batch_size, sequence_length=sequence_length, interval=interval, display_plot=True, plot_tech_indicators=plot_tech_indicators)
+            predict_and_plot(model, all_data, chosen_ticker, scaler, sequence_length=sequence_length, interval=interval, display_plot=True, plot_tech_indicators=plot_tech_indicators)
         else:
             print("No data available for the specified parameters.")
     elif mode == 'predict':
-        # Load data for the chosen ticker
         all_data = get_yahoo_finance_data([chosen_ticker], interval=interval)
         all_data = add_technical_indicators(all_data)
         all_data, scaler = normalize_data(all_data)
         
-        # Load the saved model
         model = CNNRNNModel(input_channels=10, rnn_hidden_size=batch_size, sequence_length=sequence_length)
         model = load_model(model, model_path)
         
         print(f"Predicting and plotting for {chosen_ticker}...")
-        predict_and_plot(model, all_data, chosen_ticker, scaler, batch_size, sequence_length=sequence_length, interval=interval, display_plot=True, plot_tech_indicators=plot_tech_indicators)
-
+        predict_and_plot(model, all_data, chosen_ticker, scaler, sequence_length=sequence_length, interval=interval, display_plot=True, plot_tech_indicators=plot_tech_indicators)
