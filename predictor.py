@@ -61,7 +61,9 @@ def normalize_data(df):
     df[feature_columns] = scaler.fit_transform(df[feature_columns])
     return df, scaler
 
-def plot_candlestick(df, predicted_dates, predicted_values, ticker, display_plot=False, plot_tech_indicators=False, previous_data_length=360):
+
+def plot_candlestick(df, predicted_dates, predicted_values, ticker, features, scaler_transform,display_plot=False, plot_tech_indicators=False, previous_data_length=360):
+    df[features] = scaler_transform.inverse_transform(df[features])
     df = df.copy()
     df['Date'] = df.index.map(mdates.date2num)
     
@@ -76,6 +78,12 @@ def plot_candlestick(df, predicted_dates, predicted_values, ticker, display_plot
         ax1.plot([row['Date'], row['Date']], [row['Open'], row['Close']], color=color, linewidth=2)
     
     if plot_tech_indicators:
+        # Recalculate technical indicators using original data
+        df['SMA'] = df['Close'].rolling(window=20).mean()
+        df['RSI'] = compute_rsi(df['Close'])
+        df['MACD'], df['SignalLine'] = compute_macd(df['Close'])
+        df['BollingerUpper'], df['BollingerLower'] = compute_bollinger_bands(df['Close'])
+        
         ax1.plot(df['Date'], df['SMA'], label='SMA', color='blue')
         ax1.fill_between(df['Date'], df['BollingerUpper'], df['BollingerLower'], color='gray', alpha=0.2, label='Bollinger Bands')
         ax2.plot(df['Date'], df['RSI'], label='RSI', color='purple', linestyle='--')
@@ -220,11 +228,13 @@ def predict_and_plot(model, data, ticker, scaler, sequence_length=30, interval='
     model.to(device)
     model.eval()
     
+    # Filter data for the specified ticker
     data = data[data['Ticker'] == ticker]
     
     feature_columns = ['Open', 'High', 'Low', 'Close', 'SMA', 'RSI', 'MACD', 'SignalLine', 'BollingerUpper', 'BollingerLower']
     data_scaled = scaler.transform(data[feature_columns])
     
+    # Prepare input data for prediction
     x_data = torch.tensor(data_scaled[-sequence_length:], dtype=torch.float32).unsqueeze(0).permute(0, 2, 1).to(device)
     
     predictions = []
@@ -244,8 +254,12 @@ def predict_and_plot(model, data, ticker, scaler, sequence_length=30, interval='
     
     print(f'Predicted values for next {sequence_length} intervals for {ticker}: {predictions}')
     
+    # Extract the last portion of the data for plotting previous candlestick data
     last_data = data.iloc[-previous_data_length:]
-    last_date = last_data.index[-1]
+    last_date = last_data.index[-1]  # Get the most recent date in the data
+
+
+    # Generate future dates based on the last date and the interval
     if interval in ['15m', '1h', '4h']:
         future_dates = pd.date_range(start=last_date, periods=sequence_length+1, freq=interval)
     elif interval == '1d':
@@ -255,23 +269,22 @@ def predict_and_plot(model, data, ticker, scaler, sequence_length=30, interval='
     
     future_dates = future_dates[1:]  # Skip the first date since it's the same as the last_date
 
-    plot_candlestick(last_data, future_dates, predictions, ticker, display_plot, plot_tech_indicators, previous_data_length)
+    # Plot the candlestick chart with previous data and predicted values
+    plot_candlestick(last_data, future_dates, predictions, ticker,feature_columns,scaler,
+                      display_plot, plot_tech_indicators,previous_data_length)
 
-    actual_values = last_data['Close'].values[-sequence_length:]  # Slice to match the length of predictions
-    error = np.mean((np.array(predictions) - actual_values)**2)
-    print(f'Mean Squared Error for the future horizon: {error:.4f}')
-
+  
 if __name__ == "__main__":
     tickers = ['BTC-USD', 'ETH-USD', 'BNB-USD', 'ADA-USD', 'XRP-USD', 'SOL-USD', 'DOT-USD', 'DOGE-USD', 'UNI-USD', 'LTC-USD', 
                'LINK-USD', 'BCH-USD', 'XLM-USD', 'FIL-USD', 'TRX-USD', 'EOS-USD', 'ATOM-USD', 'ETC-USD', 'XTZ-USD', 'MKR-USD']
     
     chosen_ticker = 'ETH-USD'
-    mode = 'predict'
-    continue_training = True  # Set this to False to train from scratch
+    mode = 'train'
+    continue_training = False  # Set this to False to train from scratch
     
     sequence_length = 120
-    batch_size = 32
-    epochs = 300
+    batch_size = 12
+    epochs = 500
     interval = '1d'
     log_dir = 'runs'
     model_path = 'model.pth'
