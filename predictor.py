@@ -63,10 +63,12 @@ def normalize_data(df):
     return df, scaler
 
 def plot_candlestick(df, predicted_dates, predicted_values, ticker, features, scaler_transform, display_plot=False, plot_tech_indicators=False, previous_data_length=360):
-    df[features] = scaler_transform.inverse_transform(df[features])
+    print(scaler_transform.data_range_)
+    print(df)
+    #df[features] = scaler_transform.inverse_transform(df[features])
     df = df.copy()
     df['Date'] = df['Date'].map(mdates.date2num)
-    print(df['Date'].head())
+
     
     # Filter data to include only the required amount of previous data
     df = df.iloc[-previous_data_length:]
@@ -116,26 +118,39 @@ def plot_candlestick(df, predicted_dates, predicted_values, ticker, features, sc
 class CNNRNNModel(nn.Module):
     def __init__(self, input_channels=10, cnn_channels=16, rnn_hidden_size=32, dropout_prob=0.5, sequence_length=30):
         super(CNNRNNModel, self).__init__()
+
+        # Define CNN layers
         self.cnn = nn.Sequential(
-            nn.Conv1d(input_channels, cnn_channels, kernel_size=3, padding=1),
+            nn.Conv1d(input_channels, cnn_channels, kernel_size=1, padding=2),  # Changed kernel_size to 1 and padding to 2
             nn.BatchNorm1d(cnn_channels),
             nn.ReLU(),
             nn.AvgPool1d(kernel_size=2),
-            nn.Conv1d(cnn_channels, cnn_channels * 2, kernel_size=3, padding=1),
+            nn.Conv1d(cnn_channels, cnn_channels * 2, kernel_size=4, padding=2),  # Changed kernel_size to 4 and padding to 2
             nn.BatchNorm1d(cnn_channels * 2),
             nn.ReLU(),
             nn.AvgPool1d(kernel_size=2),
             nn.Dropout(dropout_prob)
         )
+
+        # Calculate the output size after the CNN layers
+        cnn_output_size = self._get_cnn_output_size(sequence_length, input_channels)
+
+        # Define FC and RNN layers
         self.fc_hidden = nn.Sequential(
-            nn.Linear(cnn_channels * 2 * (sequence_length // 4), rnn_hidden_size),
+            nn.Linear(cnn_output_size, rnn_hidden_size),
             nn.BatchNorm1d(rnn_hidden_size),
             nn.ReLU(),
             nn.Dropout(dropout_prob)
         )
         self.rnn = nn.LSTM(input_size=rnn_hidden_size, hidden_size=rnn_hidden_size, num_layers=1, batch_first=True)
         self.fc_output = nn.Linear(rnn_hidden_size, 1)
-    
+
+    def _get_cnn_output_size(self, sequence_length, input_channels):
+        # Create a dummy input to calculate the output size
+        dummy_input = torch.zeros(1, input_channels, sequence_length)
+        output = self.cnn(dummy_input)
+        return output.view(1, -1).size(1)
+
     def forward(self, x):
         x = self.cnn(x)
         x = x.view(x.size(0), -1)
@@ -163,11 +178,12 @@ def train_model(model, data, batch_size=32, epochs=50, sequence_length=30, log_d
     best_loss = float('inf')
     best_model = None
     patience_counter = 0
+
     
     for train_index, test_index in tscv.split(x_data):
         x_train, x_test = x_data[train_index], x_data[test_index]
         y_train, y_test = y_data[train_index], y_data[test_index]
-        
+
         x_train = torch.tensor(x_train, dtype=torch.float32).permute(0, 2, 1).to(device)
         y_train = torch.tensor(y_train, dtype=torch.float32).to(device)
         x_test = torch.tensor(x_test, dtype=torch.float32).permute(0, 2, 1).to(device)
@@ -228,6 +244,7 @@ def predict_and_plot(model, data, ticker, scaler, sequence_length=30, interval='
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     model.eval()
+    print(data.head())
     
     # Filter data for the specified ticker
     data = data[data['Ticker'] == ticker]
@@ -250,12 +267,16 @@ def predict_and_plot(model, data, ticker, scaler, sequence_length=30, interval='
             predicted = final_output.squeeze().item()
         
         predicted_value_scaled = np.array([0, 0, 0, predicted, 0, 0, 0, 0, 0, 0])
+
+        
         predicted_value = scaler.inverse_transform([predicted_value_scaled])[0][3]
         predictions.append(predicted_value)
+
+
         
         new_input = torch.tensor([[0, 0, 0, predicted, 0, 0, 0, 0, 0, 0]], dtype=torch.float32).to(device)
         x_input = torch.cat((x_input[:, :, 1:], new_input.unsqueeze(2)), dim=2)
-    
+
     # Extract the last portion of the data for plotting previous candlestick data
     last_data = data.iloc[-previous_data_length:]
     last_date = last_data['Date'].iloc[-1]  # Get the most recent date in the data
@@ -269,14 +290,15 @@ def predict_and_plot(model, data, ticker, scaler, sequence_length=30, interval='
         future_dates = pd.date_range(start=last_date, periods=sequence_length+1, freq='W')
     
     future_dates = future_dates[1:]  # Skip the first date since it's the same as the last_date
-
+    print('last data')
+    print(last_data)
     # Plot the candlestick chart with previous data and predicted values
     plot_candlestick(last_data, future_dates, predictions, ticker, feature_columns, scaler,
                       display_plot, plot_tech_indicators, previous_data_length)
 
 if __name__ == "__main__":
-    tickers = ['BTC-USD', 'ETH-USD', 'BNB-USD', 'ADA-USD', 'XRP-USD', 'SOL-USD', 'DOT-USD', 'DOGE-USD', 'UNI-USD', 'LTC-USD', 
-               'LINK-USD', 'BCH-USD', 'XLM-USD', 'FIL-USD', 'TRX-USD', 'EOS-USD', 'ATOM-USD', 'ETC-USD', 'XTZ-USD', 'MKR-USD']
+    tickers = ['BTC-USD', 'ETH-USD']#, 'BNB-USD', 'ADA-USD', 'XRP-USD', 'SOL-USD', 'DOT-USD', 'DOGE-USD', 'UNI-USD', 'LTC-USD', 
+               #'LINK-USD', 'BCH-USD', 'XLM-USD', 'FIL-USD', 'TRX-USD', 'EOS-USD', 'ATOM-USD', 'ETC-USD', 'XTZ-USD', 'MKR-USD']
     
     chosen_ticker = 'ETH-USD'
     mode = 'train'
@@ -284,7 +306,7 @@ if __name__ == "__main__":
     
     sequence_length = 120
     batch_size = 12
-    epochs = 200
+    epochs = 50
     interval = '1d'
     log_dir = 'runs'
     model_path = 'model.pth'
@@ -316,7 +338,8 @@ if __name__ == "__main__":
             
             save_model(model, model_path)
             
-            print(f"Predicting and plotting for {chosen_ticker}...")
+            #print(f"Predicting and plotting for {chosen_ticker}...")
+            #print([(key, scaler.data_range_) for key, scaler in scaler_dict.items()])
             predict_and_plot(model, all_data, chosen_ticker, scaler_dict[chosen_ticker], sequence_length=sequence_length, interval=interval, display_plot=True, plot_tech_indicators=plot_tech_indicators)
         else:
             print("No data available for the specified parameters.")
