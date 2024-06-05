@@ -148,7 +148,7 @@ def train_model(model, data, batch_size=32, epochs=50, sequence_length=30, learn
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     
-    writer = SummaryWriter(log_dir=os.path.join(log_dir, ticker))
+
     
     x_data, y_data = [], []
     for i in range(len(data) - sequence_length):
@@ -210,7 +210,7 @@ def train_model(model, data, batch_size=32, epochs=50, sequence_length=30, learn
                 print("Early stopping triggered")
                 break
     
-    writer.close()
+
     if best_model is not None:
         model.load_state_dict(best_model)
     return model, total_loss
@@ -310,7 +310,7 @@ if __name__ == "__main__":
                'LINK-USD', 'BCH-USD', 'XLM-USD', 'FIL-USD', 'TRX-USD', 'EOS-USD', 'ATOM-USD', 'ETC-USD', 'XTZ-USD', 'MKR-USD']
     
     chosen_ticker = 'BTC-USD'
-    mode = 'predict'
+    mode = 'train'
     continue_training = True  # Set this to False to train from scratch
     
     # Hyperparameters
