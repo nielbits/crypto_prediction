@@ -34,12 +34,19 @@ def add_technical_indicators(df):
     bb = BollingerBands(close=df['Close'], window=20, window_dev=2)
     df['BollingerUpper'] = bb.bollinger_hband()
     df['BollingerLower'] = bb.bollinger_lband()
+    
+    # Calculate new features
+    df['UpperWickSize'] = df['High'] - np.maximum(df['Open'], df['Close'])
+    df['LowerWickSize'] = np.minimum(df['Open'], df['Close']) - df['Low']
+    df['BodySize'] = np.abs(df['Close'] - df['Open'])
+    df['PriceVariation'] = df['Close'].diff()
+    
     df.dropna(inplace=True)
     return df
 
 def normalize_data(df):
     scaler = MinMaxScaler()
-    feature_columns = ['Open', 'High', 'Low', 'Close', 'SMA', 'RSI', 'MACD', 'SignalLine', 'BollingerUpper', 'BollingerLower']
+    feature_columns = ['UpperWickSize', 'BodySize', 'LowerWickSize', 'PriceVariation', 'SMA', 'RSI', 'MACD', 'SignalLine', 'BollingerUpper', 'BollingerLower']
     df_features = df[feature_columns]
     df[feature_columns] = scaler.fit_transform(df_features)
     return df, scaler
@@ -146,7 +153,7 @@ def train_model(model, data, batch_size=32, epochs=50, sequence_length=30, learn
     x_data, y_data = [], []
     for i in range(len(data) - sequence_length):
         x_data.append(data[i:i + sequence_length])
-        y_data.append(data[i + sequence_length, 3])  # We predict the Close price
+        y_data.append(data[i + sequence_length, 3])  # We predict the PriceVariation
     
     x_data, y_data = np.array(x_data), np.array(y_data)
     
@@ -231,7 +238,7 @@ def predict_and_plot(model, data, ticker, scaler, sequence_length=30, interval='
     # Preserve the date index as a column
     data['Date'] = data.index
     
-    feature_columns = ['Open', 'High', 'Low', 'Close', 'SMA', 'RSI', 'MACD', 'SignalLine', 'BollingerUpper', 'BollingerLower']
+    feature_columns = ['UpperWickSize', 'BodySize', 'LowerWickSize', 'PriceVariation', 'SMA', 'RSI', 'MACD', 'SignalLine', 'BollingerUpper', 'BollingerLower']
     data_scaled = scaler.transform(data[feature_columns])
     
     # Prepare input data for prediction without offset
@@ -251,10 +258,10 @@ def predict_and_plot(model, data, ticker, scaler, sequence_length=30, interval='
         
         # Ensure correct scaling
         predicted_value_scaled = np.zeros(len(feature_columns))
-        predicted_value_scaled[feature_columns.index('Close')] = predicted
+        predicted_value_scaled[feature_columns.index('PriceVariation')] = predicted
         
         # Inverse transform the predicted value
-        predicted_value = scaler.inverse_transform([predicted_value_scaled])[0][feature_columns.index('Close')]
+        predicted_value = scaler.inverse_transform([predicted_value_scaled])[0][feature_columns.index('PriceVariation')]
         predictions.append(predicted_value)
         
         # Update input for the next prediction step
@@ -291,8 +298,12 @@ def predict_and_plot(model, data, ticker, scaler, sequence_length=30, interval='
     else:
         actual_close_prices = None
     
+    # Adjust predictions to be the cumulative sum of the predicted variations
+    last_close = last_data['Close'].iloc[-1]
+    cumulative_predictions = np.cumsum(predictions) + last_close
+    
     # Plot the candlestick chart with previous data and predicted values
-    plot_candlestick(last_data, future_dates, predictions[:len(future_dates)], actual_close_prices, ticker, feature_columns, scaler, display_plot, plot_tech_indicators, historical_data_length)
+    plot_candlestick(last_data, future_dates, cumulative_predictions[:len(future_dates)], actual_close_prices, ticker, feature_columns, scaler, display_plot, plot_tech_indicators, historical_data_length)
 
 if __name__ == "__main__":
     tickers = ['BTC-USD', 'ETH-USD', 'BNB-USD', 'ADA-USD', 'XRP-USD', 'SOL-USD', 'DOT-USD', 'DOGE-USD', 'UNI-USD', 'LTC-USD', 
@@ -300,22 +311,22 @@ if __name__ == "__main__":
     
     chosen_ticker = 'BTC-USD'
     mode = 'predict'
-    continue_training = False  # Set this to False to train from scratch
+    continue_training = True  # Set this to False to train from scratch
     
     # Hyperparameters
     sequence_length = 15  # Sequence length
     batch_size = 12       # Batch size
-    epochs = 50          # Number of epochs
-    learning_rate = 0.0001 # Learning rate
+    epochs = 200          # Number of epochs
+    learning_rate = 0.001 # Learning rate
     interval = '1d'       # Data interval
     log_dir = 'runs'      # Directory for TensorBoard logs
     model_path = 'model.pth'  # Model save path
     plot_tech_indicators = True
-    start_date = '2024-03-01'
-    end_date = '2024-06-01'
+    start_date = '2023-01-01'
+    end_date = '2024-06-04'
     align_prediction_with_data = True  # Set this flag to align prediction with available data
-    historical_data_length = 60  # Set the length of historical data to be used
-    training_loops = 10  # Define how many times the training loop will run
+    historical_data_length = 120  # Set the length of historical data to be used
+    training_loops = 1  # Define how many times the training loop will run
 
     scaler_dict = {}
     total_losses = []
@@ -341,7 +352,7 @@ if __name__ == "__main__":
                     ticker_data = all_data[all_data['Ticker'] == ticker]
                     ticker_data, scaler_dict[ticker] = normalize_data(ticker_data)
                     print(f"Training the model with {ticker} data...")
-                    model, total_loss = train_model(model, ticker_data[['Open', 'High', 'Low', 'Close', 'SMA', 'RSI', 'MACD', 'SignalLine', 'BollingerUpper', 'BollingerLower']].values, batch_size=batch_size, epochs=epochs, sequence_length=sequence_length, learning_rate=learning_rate, log_dir=log_dir, ticker=ticker)
+                    model, total_loss = train_model(model, ticker_data[['UpperWickSize', 'BodySize', 'LowerWickSize', 'PriceVariation', 'SMA', 'RSI', 'MACD', 'SignalLine', 'BollingerUpper', 'BollingerLower']].values, batch_size=batch_size, epochs=epochs, sequence_length=sequence_length, learning_rate=learning_rate, log_dir=log_dir, ticker=ticker)
                     total_losses.append(total_loss)
             
             save_model(model, model_path)
@@ -362,7 +373,7 @@ if __name__ == "__main__":
         all_data = get_yahoo_finance_data([chosen_ticker], interval=interval, start=start_date, end=end_date)
         all_data = add_technical_indicators(all_data)
         all_data, scaler_dict[chosen_ticker] = normalize_data(all_data)
-        features = ['Open', 'High', 'Low', 'Close', 'SMA', 'RSI', 'MACD', 'SignalLine', 'BollingerUpper', 'BollingerLower']
+        features = ['UpperWickSize', 'BodySize', 'LowerWickSize', 'PriceVariation', 'SMA', 'RSI', 'MACD', 'SignalLine', 'BollingerUpper', 'BollingerLower']
         model = CNNRNNModel(input_channels=10, rnn_hidden_size=batch_size, sequence_length=sequence_length)
         model = load_model(model, model_path)
         all_data[features] = scaler_dict[chosen_ticker].inverse_transform(all_data[features])
